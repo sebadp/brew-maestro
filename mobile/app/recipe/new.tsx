@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -9,9 +9,9 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import useRecipeStore, { Recipe, Ingredient, calculateABV } from '../../store/recipeStore';
+import useRecipeStore, { Recipe, Ingredient, calculateABV, calculateMashWater, calculateSpargeWater } from '../../store/recipeStore';
 
 const MAESTRO_GOLD = '#F6C101';
 const HOP_GREEN = '#81A742';
@@ -31,14 +31,36 @@ const BEER_STYLES = [
   'Brown Ale',
 ];
 
+const DEFAULT_INSTRUCTIONS = [
+  'Heat strike water to appropriate temperature',
+  'Mash grains for 60 minutes',
+  'Sparge and collect wort',
+  'Bring wort to boil and add hops according to schedule',
+  'Cool wort to pitching temperature',
+  'Transfer to fermenter and pitch yeast',
+  'Ferment at appropriate temperature',
+  'Package when fermentation is complete',
+];
+
+const DEFAULT_YEAST: Partial<Ingredient> = {
+  name: 'Safale US-05',
+  amount: 11.5,
+  unit: 'g',
+  type: 'yeast',
+};
+
 export default function NewRecipeScreen() {
   const router = useRouter();
-  const { addRecipe, isLoading } = useRecipeStore();
+  const { editId } = useLocalSearchParams<{ editId?: string }>();
+  const isEditing = Boolean(editId);
+  const { addRecipe, updateRecipe: updateRecipeInStore, getRecipe, isLoading } = useRecipeStore();
 
   const [recipe, setRecipe] = useState({
     name: '',
     style: BEER_STYLES[0],
     batchSize: '20',
+    mashWater: '12',
+    spargeWater: '11',
     boilTime: '60',
     og: '1.050',
     fg: '1.010',
@@ -54,14 +76,64 @@ export default function NewRecipeScreen() {
     { name: 'Cascade', amount: 30, unit: 'g', time: 60, alphaAcid: 5.5, type: 'hop' },
   ]);
 
-  const [yeast, setYeast] = useState<Partial<Ingredient>>({
-    name: 'Safale US-05',
-    amount: 11.5,
-    unit: 'g',
-    type: 'yeast',
-  });
+  const [yeast, setYeast] = useState<Partial<Ingredient>>(() => ({ ...DEFAULT_YEAST }));
+  const [otherIngredients, setOtherIngredients] = useState<Ingredient[]>([]);
+  const [loadedRecipe, setLoadedRecipe] = useState<Recipe | null>(null);
+  const [isInitialized, setIsInitialized] = useState(!isEditing);
 
-  const updateRecipe = (field: string, value: string) => {
+  useEffect(() => {
+    if (!isEditing || !editId) {
+      return;
+    }
+
+    const existingRecipe = getRecipe(editId);
+    if (!existingRecipe) {
+      Alert.alert('Recipe not found', 'Unable to edit this recipe.', [
+        { text: 'OK', onPress: () => router.back() },
+      ]);
+      setIsInitialized(true);
+      return;
+    }
+
+    setRecipe({
+      name: existingRecipe.name,
+      style: existingRecipe.style,
+      batchSize: existingRecipe.batchSize.toString(),
+      mashWater: existingRecipe.mashWater.toString(),
+      spargeWater: existingRecipe.spargeWater.toString(),
+      boilTime: existingRecipe.boilTime.toString(),
+      og: existingRecipe.og.toFixed(3),
+      fg: existingRecipe.fg.toFixed(3),
+      efficiency: existingRecipe.efficiency.toString(),
+      notes: existingRecipe.notes ?? '',
+    });
+
+    setMalts(
+      existingRecipe.ingredients
+        .filter(ingredient => ingredient.type === 'malt')
+        .map(ingredient => ({ ...ingredient }))
+    );
+
+    setHops(
+      existingRecipe.ingredients
+        .filter(ingredient => ingredient.type === 'hop')
+        .map(ingredient => ({ ...ingredient }))
+    );
+
+    const existingYeasts = existingRecipe.ingredients.filter(ingredient => ingredient.type === 'yeast');
+    setYeast(existingYeasts.length > 0 ? { ...existingYeasts[0] } : { ...DEFAULT_YEAST });
+
+    setOtherIngredients(
+      existingRecipe.ingredients
+        .filter(ingredient => !['malt', 'hop', 'yeast'].includes(ingredient.type))
+        .map(ingredient => ({ ...ingredient }))
+    );
+
+    setLoadedRecipe(existingRecipe);
+    setIsInitialized(true);
+  }, [isEditing, editId, getRecipe, router]);
+
+  const updateRecipeField = (field: string, value: string) => {
     setRecipe(prev => ({ ...prev, [field]: value }));
   };
 
@@ -104,14 +176,55 @@ export default function NewRecipeScreen() {
     }
   };
 
-  const calculateRecipeStats = () => {
-    const og = parseFloat(recipe.og) || 1.050;
-    const fg = parseFloat(recipe.fg) || 1.010;
+  const calculateRecipeStats = (baseRecipe?: Recipe | null) => {
+    const og = parseFloat(recipe.og) || baseRecipe?.og || 1.05;
+    const fg = parseFloat(recipe.fg) || baseRecipe?.fg || 1.01;
+
     return {
       abv: calculateABV(og, fg),
-      ibu: 30, // Simplified - would need proper IBU calculation
-      srm: 8,  // Simplified - would need SRM calculation
+      ibu: baseRecipe?.ibu ?? 30,
+      srm: baseRecipe?.srm ?? 8,
     };
+  };
+
+  const generateIngredientId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  const buildIngredients = (): Ingredient[] => {
+    const maltIngredients = malts.map(malt => ({
+      id: malt.id ?? generateIngredientId(),
+      name: malt.name!.trim(),
+      type: malt.type ?? 'malt',
+      amount: typeof malt.amount === 'number' ? malt.amount : 0,
+      unit: malt.unit ?? 'kg',
+      color: malt.color,
+    }));
+
+    const hopIngredients = hops.map(hop => ({
+      id: hop.id ?? generateIngredientId(),
+      name: hop.name!.trim(),
+      type: hop.type ?? 'hop',
+      amount: typeof hop.amount === 'number' ? hop.amount : 0,
+      unit: hop.unit ?? 'g',
+      time: hop.time,
+      alphaAcid: hop.alphaAcid,
+    }));
+
+    const yeastIngredient = yeast.name
+      ? [{
+          id: yeast.id ?? generateIngredientId(),
+          name: yeast.name.trim(),
+          type: 'yeast' as const,
+          amount: typeof yeast.amount === 'number' ? yeast.amount : 0,
+          unit: yeast.unit ?? 'g',
+        }]
+      : [];
+
+    const preservedOthers = otherIngredients.map(ingredient => ({
+      ...ingredient,
+      id: ingredient.id ?? generateIngredientId(),
+    }));
+
+    return [...maltIngredients, ...hopIngredients, ...yeastIngredient, ...preservedOthers];
   };
 
   const validateAndSave = async () => {
@@ -120,50 +233,77 @@ export default function NewRecipeScreen() {
       return;
     }
 
-    if (malts.some(malt => !malt.name || !malt.amount)) {
+    if (malts.some(malt => !malt.name?.trim() || !malt.amount)) {
       Alert.alert('Validation Error', 'Please complete all malt entries.');
       return;
     }
 
-    if (hops.some(hop => !hop.name || !hop.amount)) {
+    if (hops.some(hop => !hop.name?.trim() || !hop.amount)) {
       Alert.alert('Validation Error', 'Please complete all hop entries.');
       return;
     }
 
-    if (!yeast.name) {
+    if (!yeast.name?.trim()) {
       Alert.alert('Validation Error', 'Please enter yeast information.');
       return;
     }
 
-    const stats = calculateRecipeStats();
-    const ingredients: Ingredient[] = [
-      ...malts.map(malt => ({ ...malt, id: Date.now().toString() + Math.random() } as Ingredient)),
-      ...hops.map(hop => ({ ...hop, id: Date.now().toString() + Math.random() } as Ingredient)),
-      { ...yeast, id: Date.now().toString() + Math.random() } as Ingredient,
-    ];
+    const stats = calculateRecipeStats(loadedRecipe);
+    const ingredients = buildIngredients();
+    const batchSize = parseFloat(recipe.batchSize) || loadedRecipe?.batchSize || 20;
+    const mashWater = parseFloat(recipe.mashWater) || loadedRecipe?.mashWater || 12;
+    const spargeWater = parseFloat(recipe.spargeWater) || loadedRecipe?.spargeWater || 11;
+    const boilTime = parseFloat(recipe.boilTime) || loadedRecipe?.boilTime || 60;
+    const og = parseFloat(recipe.og) || loadedRecipe?.og || 1.05;
+    const fg = parseFloat(recipe.fg) || loadedRecipe?.fg || 1.01;
+    const efficiency = parseFloat(recipe.efficiency) || loadedRecipe?.efficiency || 75;
+    const instructions = loadedRecipe?.instructions ?? DEFAULT_INSTRUCTIONS;
+
+    if (isEditing && editId) {
+      try {
+        await updateRecipeInStore(editId, {
+          name: recipe.name.trim(),
+          style: recipe.style,
+          batchSize,
+          mashWater,
+          spargeWater,
+          boilTime,
+          og,
+          fg,
+          abv: stats.abv,
+          ibu: loadedRecipe?.ibu ?? stats.ibu,
+          srm: loadedRecipe?.srm ?? stats.srm,
+          efficiency,
+          ingredients,
+          instructions,
+          notes: recipe.notes,
+        });
+
+        Alert.alert('Success', 'Recipe updated successfully!', [
+          { text: 'OK', onPress: () => router.replace(`/recipe/${editId}`) }
+        ]);
+      } catch (error) {
+        Alert.alert('Error', 'Failed to update recipe. Please try again.');
+      }
+
+      return;
+    }
 
     const newRecipe: Omit<Recipe, 'id' | 'createdAt' | 'updatedAt'> = {
-      name: recipe.name,
+      name: recipe.name.trim(),
       style: recipe.style,
-      batchSize: parseFloat(recipe.batchSize) || 20,
-      boilTime: parseFloat(recipe.boilTime) || 60,
-      og: parseFloat(recipe.og) || 1.050,
-      fg: parseFloat(recipe.fg) || 1.010,
+      batchSize,
+      mashWater,
+      spargeWater,
+      boilTime,
+      og,
+      fg,
       abv: stats.abv,
       ibu: stats.ibu,
       srm: stats.srm,
-      efficiency: parseFloat(recipe.efficiency) || 75,
+      efficiency,
       ingredients,
-      instructions: [
-        'Heat strike water to appropriate temperature',
-        'Mash grains for 60 minutes',
-        'Sparge and collect wort',
-        'Bring wort to boil and add hops according to schedule',
-        'Cool wort to pitching temperature',
-        'Transfer to fermenter and pitch yeast',
-        'Ferment at appropriate temperature',
-        'Package when fermentation is complete',
-      ],
+      instructions,
       notes: recipe.notes,
     };
 
@@ -177,10 +317,30 @@ export default function NewRecipeScreen() {
     }
   };
 
+  if (isEditing && !isInitialized) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.loadingContainer}>
+          <Text style={styles.loadingText}>Loading recipe...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (isEditing && isInitialized && !loadedRecipe) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.loadingContainer}>
+          <Text style={styles.loadingText}>Recipe not found.</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContainer}>
-        <Text style={styles.title}>New Recipe</Text>
+        <Text style={styles.title}>{isEditing ? 'Edit Recipe' : 'New Recipe'}</Text>
 
         {/* Basic Info */}
         <View style={styles.section}>
@@ -191,7 +351,7 @@ export default function NewRecipeScreen() {
             <TextInput
               style={styles.input}
               value={recipe.name}
-              onChangeText={(value) => updateRecipe('name', value)}
+              onChangeText={(value) => updateRecipeField('name', value)}
               placeholder="Enter recipe name"
             />
           </View>
@@ -209,7 +369,7 @@ export default function NewRecipeScreen() {
               <TextInput
                 style={styles.input}
                 value={recipe.batchSize}
-                onChangeText={(value) => updateRecipe('batchSize', value)}
+                onChangeText={(value) => updateRecipeField('batchSize', value)}
                 keyboardType="decimal-pad"
               />
             </View>
@@ -219,8 +379,32 @@ export default function NewRecipeScreen() {
               <TextInput
                 style={styles.input}
                 value={recipe.boilTime}
-                onChangeText={(value) => updateRecipe('boilTime', value)}
+                onChangeText={(value) => updateRecipeField('boilTime', value)}
                 keyboardType="decimal-pad"
+              />
+            </View>
+          </View>
+
+          <View style={styles.row}>
+            <View style={[styles.inputGroup, styles.halfWidth]}>
+              <Text style={styles.inputLabel}>Mash Water (L)</Text>
+              <TextInput
+                style={styles.input}
+                value={recipe.mashWater}
+                onChangeText={(value) => updateRecipeField('mashWater', value)}
+                keyboardType="decimal-pad"
+                placeholder="12.0"
+              />
+            </View>
+
+            <View style={[styles.inputGroup, styles.halfWidth]}>
+              <Text style={styles.inputLabel}>Sparge Water (L)</Text>
+              <TextInput
+                style={styles.input}
+                value={recipe.spargeWater}
+                onChangeText={(value) => updateRecipeField('spargeWater', value)}
+                keyboardType="decimal-pad"
+                placeholder="11.0"
               />
             </View>
           </View>
@@ -231,7 +415,7 @@ export default function NewRecipeScreen() {
               <TextInput
                 style={styles.input}
                 value={recipe.og}
-                onChangeText={(value) => updateRecipe('og', value)}
+                onChangeText={(value) => updateRecipeField('og', value)}
                 keyboardType="decimal-pad"
               />
             </View>
@@ -241,7 +425,7 @@ export default function NewRecipeScreen() {
               <TextInput
                 style={styles.input}
                 value={recipe.fg}
-                onChangeText={(value) => updateRecipe('fg', value)}
+                onChangeText={(value) => updateRecipeField('fg', value)}
                 keyboardType="decimal-pad"
               />
             </View>
@@ -367,7 +551,7 @@ export default function NewRecipeScreen() {
           <TextInput
             style={[styles.input, styles.notesInput]}
             value={recipe.notes}
-            onChangeText={(value) => updateRecipe('notes', value)}
+            onChangeText={(value) => updateRecipeField('notes', value)}
             placeholder="Recipe notes, brewing tips, etc."
             multiline
             numberOfLines={4}
@@ -380,7 +564,7 @@ export default function NewRecipeScreen() {
           disabled={isLoading}
         >
           <Text style={styles.saveButtonText}>
-            {isLoading ? 'Saving...' : 'Save Recipe'}
+            {isLoading ? 'Saving...' : isEditing ? 'Save Changes' : 'Save Recipe'}
           </Text>
         </TouchableOpacity>
       </ScrollView>
@@ -392,6 +576,16 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: YEAST_CREAM,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  loadingText: {
+    fontSize: 16,
+    color: '#666',
   },
   scrollContainer: {
     padding: 20,

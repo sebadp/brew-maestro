@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Recipe } from './recipeStore';
+import { formatDateTime } from '../utils/date';
 
 export interface BrewStep {
   id: string;
@@ -262,7 +263,8 @@ const useBrewSessionStore = create<BrewSessionStore>((set, get) => ({
     const session = get().sessions.find(s => s.id === sessionId);
     if (!session) return;
 
-    const updatedNotes = [...session.notes, `${new Date().toLocaleString()}: ${note}`];
+    const timestamp = formatDateTime(new Date());
+    const updatedNotes = [...session.notes, `${timestamp}: ${note}`];
     await get().updateSession(sessionId, { notes: updatedNotes });
   },
 

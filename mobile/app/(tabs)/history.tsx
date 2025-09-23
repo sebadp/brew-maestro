@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, FlatList, TouchableOpacity } from 'react-native
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { createShadow } from '../../utils/shadows';
+import { formatDate } from '../../utils/date';
 
 const MAESTRO_GOLD = '#F6C101';
 const HOP_GREEN = '#81A742';
@@ -82,7 +83,7 @@ const HistoryCard: React.FC<HistoryCardProps> = ({ batch }) => (
       </View>
     </View>
 
-    <Text style={styles.brewDate}>Brewed on {new Date(batch.brewDate).toLocaleDateString()}</Text>
+    <Text style={styles.brewDate}>Brewed on {formatDate(batch.brewDate)}</Text>
 
     <View style={styles.statsGrid}>
       <View style={styles.statColumn}>

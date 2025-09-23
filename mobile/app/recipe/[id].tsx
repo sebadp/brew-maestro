@@ -48,7 +48,8 @@ export default function RecipeDetailScreen() {
   };
 
   const handleEditRecipe = () => {
-    router.push(`/recipe/edit/${id}`);
+    if (!id) return;
+    router.push({ pathname: '/recipe/new', params: { editId: id } });
   };
 
   if (!recipe) {
@@ -94,6 +95,18 @@ export default function RecipeDetailScreen() {
           <View style={styles.infoRow}>
             <Text style={styles.infoLabel}>Batch Size:</Text>
             <Text style={styles.infoValue}>{recipe.batchSize}L</Text>
+          </View>
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>Mash Water:</Text>
+            <Text style={styles.infoValue}>{recipe.mashWater}L</Text>
+          </View>
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>Sparge Water:</Text>
+            <Text style={styles.infoValue}>{recipe.spargeWater}L</Text>
+          </View>
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>Total Water:</Text>
+            <Text style={styles.infoValue}>{(recipe.mashWater + recipe.spargeWater).toFixed(1)}L</Text>
           </View>
           <View style={styles.infoRow}>
             <Text style={styles.infoLabel}>Boil Time:</Text>

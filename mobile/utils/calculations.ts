@@ -5,9 +5,24 @@
 
 // ABV Calculations
 export const calculateABV = (og: number, fg: number): number => {
-  if (!og || !fg || og <= fg) return 0;
-  // Standard formula: ABV = (OG - FG) × 131.25
-  return Math.round(((og - fg) * 131.25) * 100) / 100;
+  if (!og || !fg) return 0;
+
+  // Handle different input formats: 1.032 or 1032
+  let normalizedOG = og;
+  let normalizedFG = fg;
+
+  // If values are > 100, assume they're in format like 1032 instead of 1.032
+  if (og > 100) normalizedOG = og / 1000;
+  if (fg > 100) normalizedFG = fg / 1000;
+
+  if (normalizedOG <= normalizedFG || normalizedOG < 1.000 || normalizedFG < 0.990) return 0;
+
+  // Convert specific gravity to gravity points (1.032 → 32 points)
+  const ogPoints = (normalizedOG - 1) * 1000;
+  const fgPoints = (normalizedFG - 1) * 1000;
+  // Standard formula: ABV = (OG points - FG points) × 0.131
+  const abv = (ogPoints - fgPoints) * 0.131;
+  return Math.round(abv * 100) / 100;
 };
 
 export const calculateABVHall = (og: number, fg: number): number => {
@@ -32,7 +47,7 @@ export const calculateIBUTinseth = (
   const boilTimeFactor = (1 - Math.exp(-0.04 * boilTime)) / 4.15;
   const utilization = bignessFactor * boilTimeFactor;
 
-  const ibu = (hopAmount * alphaAcid * utilization * 1000) / (batchSize * 10);
+  const ibu = (hopAmount * alphaAcid * utilization * 1000) / batchSize;
   return Math.round(ibu * 10) / 10;
 };
 
@@ -62,7 +77,7 @@ export const calculateIBURager = (
   const gravityAdjustment = og > 1.050 ? (og - 1.050) / 0.2 : 0;
   const adjustedUtilization = utilization / (1 + gravityAdjustment);
 
-  const ibu = (hopAmount * alphaAcid * adjustedUtilization * 1000) / (batchSize * 10);
+  const ibu = (hopAmount * alphaAcid * adjustedUtilization * 1000) / batchSize;
   return Math.round(ibu * 10) / 10;
 };
 

@@ -3,7 +3,7 @@ import { Audio } from 'expo-av';
 
 let isPlaying = false;
 let vibrationInterval: NodeJS.Timeout | null = null;
-let beepInterval: NodeJS.Timeout | null = null;
+let sound: Audio.Sound | null = null;
 
 export const startAlarm = async () => {
   if (isPlaying) return;
@@ -20,14 +20,16 @@ export const startAlarm = async () => {
 
     isPlaying = true;
 
-    // Start continuous strong vibration pattern
-    startVibrationPattern();
+    // Start alarm sound
+    await startAlarmSound();
 
-    // Start beep sound pattern
-    startBeepPattern();
+    // Start aggressive vibration pattern for urgent alarm
+    startVibrationPattern();
 
   } catch (error) {
     console.log('Error starting alarm:', error);
+    // If audio fails, at least start vibration
+    startVibrationPattern();
     isPlaying = true;
   }
 };
@@ -36,16 +38,17 @@ export const stopAlarm = async () => {
   if (!isPlaying) return;
 
   try {
+    // Stop sound
+    if (sound) {
+      await sound.stopAsync();
+      await sound.unloadAsync();
+      sound = null;
+    }
+
     // Stop vibration
     if (vibrationInterval) {
       clearInterval(vibrationInterval);
       vibrationInterval = null;
-    }
-
-    // Stop beep pattern
-    if (beepInterval) {
-      clearInterval(beepInterval);
-      beepInterval = null;
     }
 
     isPlaying = false;
@@ -55,49 +58,48 @@ export const stopAlarm = async () => {
   }
 };
 
+const startAlarmSound = async () => {
+  try {
+    // Create alarm sound from data URI
+    const alarmSoundUri = "data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+L0u2ccBDqO1/LNeSsFJHfH8N2QQAoUXrTp66hVFApGn+L0u2ccBDqO1/LNeSsFJHfH8N2QQAoUXrTp66hVFApGn+L0u2ccBDqO1/LNeSsFJHfH8N2QQAoUXrTp66hVFApGn+L0u2ccBDqO1/LNeSsFJHfH8N2QQAoUXrTp66hVFApGn+L0u2ccBDqO1/LNeSsFJHfH8N2QQAoUXrTp66hVFApGn+L0u2ccBDqO1/LNeSsFJHfH8N2QQAoUXrTp66hVFApGn+L0u2ccBDqO1/LNeSsFJHfH8N2QQAoUXrTp66hVFApGn+L0u2ccBDqO1/LNeSsFJHfH8N2QQAoUXrTp66hVFApGn+L0u2ccBDqO1/LNeSsFJHfH8N2QQAoUXrTp66hVFApGn+L0u2ccBDqO1/LNeSsFJHfH8N2QQAoUXrTp66hVFApGn+L0u2ccBDqO1/LNeSsFJHfH8N2QQAoUXrTp66hVFApGn+L0u2ccBDqO1/LNeSsFJHfH8N2QQAoUXrTp66hVFA==";
+
+    const { sound: alarmSound } = await Audio.Sound.createAsync(
+      { uri: alarmSoundUri },
+      {
+        shouldPlay: true,
+        isLooping: true,
+        volume: 1.0,
+      }
+    );
+
+    sound = alarmSound;
+  } catch (error) {
+    console.log('Failed to load alarm sound, continuing with vibration only:', error);
+  }
+};
+
 const startVibrationPattern = () => {
   if (vibrationInterval) return;
+
+  // Create an urgent alarm pattern with different intensities
+  const vibrationPattern = [
+    Haptics.ImpactFeedbackStyle.Heavy,
+    Haptics.ImpactFeedbackStyle.Heavy,
+    Haptics.ImpactFeedbackStyle.Medium,
+    Haptics.ImpactFeedbackStyle.Heavy,
+    Haptics.ImpactFeedbackStyle.Heavy,
+  ];
+
+  let patternIndex = 0;
 
   // Immediate strong vibration
   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
 
-  // Aggressive vibration pattern: vibrate every 300ms for urgent alarm
+  // Aggressive vibration pattern: cycle through different intensities
   vibrationInterval = setInterval(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-  }, 300);
-};
-
-const startBeepPattern = () => {
-  if (beepInterval) return;
-
-  // Play system notification sound repeatedly
-  const playBeep = async () => {
-    try {
-      // Use system notification sound - this is more reliable than custom audio
-      const { sound } = await Audio.Sound.createAsync(
-        // Use the platform's default notification sound
-        { uri: 'system:notification' },
-        { shouldPlay: true, volume: 1.0 }
-      );
-
-      // Clean up after playing
-      setTimeout(async () => {
-        try {
-          await sound.unloadAsync();
-        } catch (e) {
-          // Ignore cleanup errors
-        }
-      }, 1000);
-    } catch (error) {
-      // If system sound fails, just continue with vibration
-    }
-  };
-
-  // Play initial beep
-  playBeep();
-
-  // Repeat beep every 1 second
-  beepInterval = setInterval(playBeep, 1000);
+    Haptics.impactAsync(vibrationPattern[patternIndex]);
+    patternIndex = (patternIndex + 1) % vibrationPattern.length;
+  }, 250); // Very frequent vibrations for maximum urgency
 };
 
 export const isAlarmPlaying = () => isPlaying;

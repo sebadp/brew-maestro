@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -7,29 +7,32 @@ import {
   ScrollView,
   TouchableOpacity,
   Alert,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import useRecipeStore, { Recipe, Ingredient, calculateABV, calculateMashWater, calculateSpargeWater } from '../../store/recipeStore';
+import { BEER_STYLES } from '../../types/beerStyles';
 
 const MAESTRO_GOLD = '#F6C101';
 const HOP_GREEN = '#81A742';
 const DEEP_BREW = '#1A1A1A';
 const YEAST_CREAM = '#FFF8E7';
 
-const BEER_STYLES = [
-  'American IPA',
-  'Pale Ale',
-  'Wheat Beer',
-  'Porter',
-  'Stout',
-  'Lager',
-  'Pilsner',
-  'Belgian Ale',
-  'Saison',
-  'Brown Ale',
-];
+type EditableIngredient = Partial<Ingredient> & { displayAmount: string };
+type EditableMalt = EditableIngredient & { type: 'malt' };
+type EditableHop = EditableIngredient & { type: 'hop' };
+
+const parseNumericInput = (value: string | undefined) => {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  const normalized = value.replace(',', '.');
+  const parsed = Number.parseFloat(normalized);
+  return Number.isNaN(parsed) ? undefined : parsed;
+};
 
 const DEFAULT_INSTRUCTIONS = [
   'Heat strike water to appropriate temperature',
@@ -58,6 +61,7 @@ export default function NewRecipeScreen() {
   const [recipe, setRecipe] = useState({
     name: '',
     style: BEER_STYLES[0],
+    difficulty: 'Custom Craft',
     batchSize: '20',
     mashWater: '12',
     spargeWater: '11',
@@ -68,18 +72,42 @@ export default function NewRecipeScreen() {
     notes: '',
   });
 
-  const [malts, setMalts] = useState<Partial<Ingredient>[]>([
-    { name: 'Pale Malt', amount: 4, unit: 'kg', type: 'malt' },
+  const [malts, setMalts] = useState<EditableMalt[]>([
+    { name: 'Pale Malt', amount: 4, displayAmount: '4', unit: 'kg', type: 'malt' },
   ]);
 
-  const [hops, setHops] = useState<Partial<Ingredient>[]>([
-    { name: 'Cascade', amount: 30, unit: 'g', time: 60, alphaAcid: 5.5, type: 'hop' },
+  const [hops, setHops] = useState<EditableHop[]>([
+    { name: 'Cascade', amount: 30, displayAmount: '30', unit: 'g', time: 60, alphaAcid: 5.5, type: 'hop' },
   ]);
 
   const [yeast, setYeast] = useState<Partial<Ingredient>>(() => ({ ...DEFAULT_YEAST }));
   const [otherIngredients, setOtherIngredients] = useState<Ingredient[]>([]);
   const [loadedRecipe, setLoadedRecipe] = useState<Recipe | null>(null);
   const [isInitialized, setIsInitialized] = useState(!isEditing);
+  const [isStylePickerVisible, setIsStylePickerVisible] = useState(false);
+  const [styleQuery, setStyleQuery] = useState('');
+  const [isCustomStyle, setIsCustomStyle] = useState(false);
+  const [shouldFocusStyleInput, setShouldFocusStyleInput] = useState(false);
+  const styleInputRef = useRef<TextInput | null>(null);
+
+  const filteredStyles = useMemo(() => {
+    const query = styleQuery.trim().toLowerCase();
+    if (!query) {
+      return BEER_STYLES;
+    }
+    return BEER_STYLES.filter(style => style.toLowerCase().includes(query));
+  }, [styleQuery]);
+
+  const hasExactStyleMatch = useMemo(() => {
+    const query = styleQuery.trim().toLowerCase();
+    return Boolean(query) && BEER_STYLES.some(style => style.toLowerCase() === query);
+  }, [styleQuery]);
+
+  useEffect(() => {
+    if (!isStylePickerVisible) {
+      setStyleQuery('');
+    }
+  }, [isStylePickerVisible]);
 
   useEffect(() => {
     if (!isEditing || !editId) {
@@ -98,6 +126,7 @@ export default function NewRecipeScreen() {
     setRecipe({
       name: existingRecipe.name,
       style: existingRecipe.style,
+      difficulty: existingRecipe.difficulty ?? 'Custom Craft',
       batchSize: existingRecipe.batchSize.toString(),
       mashWater: existingRecipe.mashWater.toString(),
       spargeWater: existingRecipe.spargeWater.toString(),
@@ -111,13 +140,21 @@ export default function NewRecipeScreen() {
     setMalts(
       existingRecipe.ingredients
         .filter(ingredient => ingredient.type === 'malt')
-        .map(ingredient => ({ ...ingredient }))
+        .map<EditableMalt>(ingredient => ({
+          ...ingredient,
+          displayAmount: ingredient.amount?.toString() ?? '',
+          type: 'malt',
+        }))
     );
 
     setHops(
       existingRecipe.ingredients
         .filter(ingredient => ingredient.type === 'hop')
-        .map(ingredient => ({ ...ingredient }))
+        .map<EditableHop>(ingredient => ({
+          ...ingredient,
+          displayAmount: ingredient.amount?.toString() ?? '',
+          type: 'hop',
+        }))
     );
 
     const existingYeasts = existingRecipe.ingredients.filter(ingredient => ingredient.type === 'yeast');
@@ -130,21 +167,65 @@ export default function NewRecipeScreen() {
     );
 
     setLoadedRecipe(existingRecipe);
+    setIsCustomStyle(!BEER_STYLES.includes(existingRecipe.style));
+    setShouldFocusStyleInput(false);
     setIsInitialized(true);
   }, [isEditing, editId, getRecipe, router]);
+
+  useEffect(() => {
+    if (isCustomStyle && shouldFocusStyleInput && styleInputRef.current) {
+      styleInputRef.current.focus();
+      setShouldFocusStyleInput(false);
+    }
+  }, [isCustomStyle, shouldFocusStyleInput]);
 
   const updateRecipeField = (field: string, value: string) => {
     setRecipe(prev => ({ ...prev, [field]: value }));
   };
 
-  const addMalt = () => {
-    setMalts(prev => [...prev, { name: '', amount: 0, unit: 'kg', type: 'malt' }]);
+  const handleSelectStyle = (selectedStyle: string) => {
+    updateRecipeField('style', selectedStyle);
+    setIsCustomStyle(false);
+    setShouldFocusStyleInput(false);
+    setIsStylePickerVisible(false);
   };
 
-  const updateMalt = (index: number, field: string, value: string | number) => {
-    setMalts(prev => prev.map((malt, i) =>
-      i === index ? { ...malt, [field]: value } : malt
-    ));
+  const handleUseQueryAsStyle = () => {
+    const customStyle = styleQuery.trim();
+    if (!customStyle) {
+      return;
+    }
+
+    updateRecipeField('style', customStyle);
+    setIsCustomStyle(!BEER_STYLES.includes(customStyle));
+    setShouldFocusStyleInput(false);
+    setIsStylePickerVisible(false);
+  };
+
+  const handleChooseCustomStyle = () => {
+    setIsCustomStyle(true);
+    updateRecipeField('style', '');
+    setShouldFocusStyleInput(true);
+    setIsStylePickerVisible(false);
+  };
+
+  const addMalt = () => {
+    setMalts(prev => [...prev, { name: '', amount: undefined, displayAmount: '', unit: 'kg', type: 'malt' }]);
+  };
+
+  const updateMalt = (index: number, field: 'name' | 'amount', value: string) => {
+    setMalts(prev => prev.map((malt, i) => {
+      if (i !== index) {
+        return malt;
+      }
+
+      if (field === 'amount') {
+        const numericValue = parseNumericInput(value);
+        return { ...malt, amount: numericValue, displayAmount: value };
+      }
+
+      return { ...malt, [field]: value };
+    }));
   };
 
   const removeMalt = (index: number) => {
@@ -156,7 +237,8 @@ export default function NewRecipeScreen() {
   const addHop = () => {
     setHops(prev => [...prev, {
       name: '',
-      amount: 0,
+      amount: undefined,
+      displayAmount: '',
       unit: 'g',
       time: 15,
       alphaAcid: 5.0,
@@ -164,10 +246,24 @@ export default function NewRecipeScreen() {
     }]);
   };
 
-  const updateHop = (index: number, field: string, value: string | number) => {
-    setHops(prev => prev.map((hop, i) =>
-      i === index ? { ...hop, [field]: value } : hop
-    ));
+  const updateHop = (index: number, field: 'name' | 'amount' | 'alphaAcid' | 'time', value: string) => {
+    setHops(prev => prev.map((hop, i) => {
+      if (i !== index) {
+        return hop;
+      }
+
+      if (field === 'amount') {
+        const numericValue = parseNumericInput(value);
+        return { ...hop, amount: numericValue, displayAmount: value };
+      }
+
+      if (field === 'alphaAcid' || field === 'time') {
+        const numericValue = parseNumericInput(value);
+        return { ...hop, [field]: numericValue ?? undefined };
+      }
+
+      return { ...hop, [field]: value };
+    }));
   };
 
   const removeHop = (index: number) => {
@@ -189,12 +285,21 @@ export default function NewRecipeScreen() {
 
   const generateIngredientId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+  const resolveEditableAmount = (ingredient: EditableIngredient) => {
+    if (typeof ingredient.amount === 'number' && !Number.isNaN(ingredient.amount)) {
+      return ingredient.amount;
+    }
+
+    const parsed = parseNumericInput(ingredient.displayAmount);
+    return parsed ?? 0;
+  };
+
   const buildIngredients = (): Ingredient[] => {
     const maltIngredients = malts.map(malt => ({
       id: malt.id ?? generateIngredientId(),
       name: malt.name!.trim(),
       type: malt.type ?? 'malt',
-      amount: typeof malt.amount === 'number' ? malt.amount : 0,
+      amount: resolveEditableAmount(malt),
       unit: malt.unit ?? 'kg',
       color: malt.color,
     }));
@@ -203,7 +308,7 @@ export default function NewRecipeScreen() {
       id: hop.id ?? generateIngredientId(),
       name: hop.name!.trim(),
       type: hop.type ?? 'hop',
-      amount: typeof hop.amount === 'number' ? hop.amount : 0,
+      amount: resolveEditableAmount(hop),
       unit: hop.unit ?? 'g',
       time: hop.time,
       alphaAcid: hop.alphaAcid,
@@ -233,12 +338,18 @@ export default function NewRecipeScreen() {
       return;
     }
 
-    if (malts.some(malt => !malt.name?.trim() || !malt.amount)) {
+    const trimmedStyle = recipe.style.trim();
+    if (!trimmedStyle) {
+      Alert.alert('Validation Error', 'Please select or enter a beer style.');
+      return;
+    }
+
+    if (malts.some(malt => !malt.name?.trim() || parseNumericInput(malt.displayAmount) === undefined)) {
       Alert.alert('Validation Error', 'Please complete all malt entries.');
       return;
     }
 
-    if (hops.some(hop => !hop.name?.trim() || !hop.amount)) {
+    if (hops.some(hop => !hop.name?.trim() || parseNumericInput(hop.displayAmount) === undefined)) {
       Alert.alert('Validation Error', 'Please complete all hop entries.');
       return;
     }
@@ -263,7 +374,8 @@ export default function NewRecipeScreen() {
       try {
         await updateRecipeInStore(editId, {
           name: recipe.name.trim(),
-          style: recipe.style,
+          style: trimmedStyle,
+          difficulty: recipe.difficulty,
           batchSize,
           mashWater,
           spargeWater,
@@ -291,7 +403,8 @@ export default function NewRecipeScreen() {
 
     const newRecipe: Omit<Recipe, 'id' | 'createdAt' | 'updatedAt'> = {
       name: recipe.name.trim(),
-      style: recipe.style,
+      style: trimmedStyle,
+      difficulty: recipe.difficulty,
       batchSize,
       mashWater,
       spargeWater,
@@ -358,9 +471,26 @@ export default function NewRecipeScreen() {
 
           <View style={styles.inputGroup}>
             <Text style={styles.inputLabel}>Style</Text>
-            <View style={styles.pickerContainer}>
-              <Text style={styles.pickerText}>{recipe.style}</Text>
-            </View>
+            <TouchableOpacity
+              style={styles.styleSelector}
+              onPress={() => setIsStylePickerVisible(true)}
+              accessibilityRole="button"
+            >
+              <Text style={recipe.style ? styles.styleSelectorText : styles.styleSelectorPlaceholder}>
+                {recipe.style || (isCustomStyle ? 'Ingresa un estilo personalizado' : 'Selecciona un estilo popular')}
+              </Text>
+              <MaterialCommunityIcons name="chevron-down" size={20} color={DEEP_BREW} />
+            </TouchableOpacity>
+            {isCustomStyle && (
+              <TextInput
+                ref={styleInputRef}
+                style={[styles.input, styles.styleTextInput]}
+                value={recipe.style}
+                onChangeText={(value) => updateRecipeField('style', value)}
+                placeholder="Escribe un nuevo estilo"
+                autoCapitalize="words"
+              />
+            )}
           </View>
 
           <View style={styles.row}>
@@ -452,8 +582,8 @@ export default function NewRecipeScreen() {
                 />
                 <TextInput
                   style={[styles.input, styles.amountInput]}
-                  value={malt.amount?.toString()}
-                  onChangeText={(value) => updateMalt(index, 'amount', parseFloat(value) || 0)}
+                  value={malt.displayAmount}
+                  onChangeText={(value) => updateMalt(index, 'amount', value)}
                   placeholder="Amount"
                   keyboardType="decimal-pad"
                 />
@@ -489,24 +619,24 @@ export default function NewRecipeScreen() {
                 <View style={styles.hopDetails}>
                   <TextInput
                     style={[styles.input, styles.smallInput]}
-                    value={hop.amount?.toString()}
-                    onChangeText={(value) => updateHop(index, 'amount', parseFloat(value) || 0)}
+                    value={hop.displayAmount}
+                    onChangeText={(value) => updateHop(index, 'amount', value)}
                     placeholder="Amount"
                     keyboardType="decimal-pad"
                   />
                   <Text style={styles.unitText}>g</Text>
                   <TextInput
                     style={[styles.input, styles.smallInput]}
-                    value={hop.alphaAcid?.toString()}
-                    onChangeText={(value) => updateHop(index, 'alphaAcid', parseFloat(value) || 0)}
+                    value={hop.alphaAcid !== undefined ? hop.alphaAcid.toString() : ''}
+                    onChangeText={(value) => updateHop(index, 'alphaAcid', value)}
                     placeholder="AA%"
                     keyboardType="decimal-pad"
                   />
                   <Text style={styles.unitText}>AA</Text>
                   <TextInput
                     style={[styles.input, styles.smallInput]}
-                    value={hop.time?.toString()}
-                    onChangeText={(value) => updateHop(index, 'time', parseFloat(value) || 0)}
+                    value={hop.time !== undefined ? hop.time.toString() : ''}
+                    onChangeText={(value) => updateHop(index, 'time', value)}
                     placeholder="Time"
                     keyboardType="decimal-pad"
                   />
@@ -568,6 +698,71 @@ export default function NewRecipeScreen() {
           </Text>
         </TouchableOpacity>
       </ScrollView>
+      <Modal
+        visible={isStylePickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsStylePickerVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Selecciona un estilo</Text>
+              <TouchableOpacity
+                onPress={() => setIsStylePickerVisible(false)}
+                accessibilityRole="button"
+                style={styles.modalCloseButton}
+              >
+                <MaterialCommunityIcons name="close" size={22} color={DEEP_BREW} />
+              </TouchableOpacity>
+            </View>
+            <TextInput
+              style={[styles.input, styles.modalSearchInput]}
+              value={styleQuery}
+              onChangeText={setStyleQuery}
+              placeholder="Buscar estilos"
+              autoFocus
+            />
+            <ScrollView style={styles.modalList} keyboardShouldPersistTaps="handled">
+              {filteredStyles.map(style => (
+                <TouchableOpacity
+                  key={style}
+                  style={styles.modalOption}
+                  onPress={() => handleSelectStyle(style)}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.modalOptionText}>{style}</Text>
+                  {recipe.style === style && (
+                    <MaterialCommunityIcons name="check" size={20} color={HOP_GREEN} />
+                  )}
+                </TouchableOpacity>
+              ))}
+              {filteredStyles.length === 0 && (
+                <Text style={styles.modalEmptyText}>No encontramos estilos con ese nombre.</Text>
+              )}
+            </ScrollView>
+            {styleQuery.trim().length > 0 && !hasExactStyleMatch && (
+              <TouchableOpacity
+                style={styles.modalCustomButton}
+                onPress={handleUseQueryAsStyle}
+                accessibilityRole="button"
+              >
+                <Text style={styles.modalCustomButtonText}>
+                  {`Usar "${styleQuery.trim()}"`}
+                </Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={styles.modalOtherButton}
+              onPress={handleChooseCustomStyle}
+              accessibilityRole="button"
+            >
+              <MaterialCommunityIcons name="pencil" size={18} color={HOP_GREEN} style={styles.modalOtherIcon} />
+              <Text style={styles.modalOtherText}>Otro estilo…</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -635,16 +830,31 @@ const styles = StyleSheet.create({
     fontSize: 16,
     backgroundColor: 'white',
   },
-  pickerContainer: {
+  styleSelector: {
     borderWidth: 1,
     borderColor: '#E5E5E5',
     borderRadius: 8,
-    padding: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     backgroundColor: 'white',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
-  pickerText: {
+  styleSelectorText: {
     fontSize: 16,
     color: DEEP_BREW,
+    flex: 1,
+    marginRight: 12,
+  },
+  styleSelectorPlaceholder: {
+    fontSize: 16,
+    color: '#999',
+    flex: 1,
+    marginRight: 12,
+  },
+  styleTextInput: {
+    marginTop: 12,
   },
   row: {
     flexDirection: 'row',
@@ -710,5 +920,84 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 16,
     fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  modalContainer: {
+    backgroundColor: 'white',
+    borderRadius: 16,
+    padding: 20,
+    maxHeight: '80%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: DEEP_BREW,
+  },
+  modalCloseButton: {
+    padding: 4,
+  },
+  modalSearchInput: {
+    marginBottom: 12,
+  },
+  modalList: {
+    maxHeight: 260,
+    marginBottom: 8,
+  },
+  modalOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F2F2F2',
+  },
+  modalOptionText: {
+    fontSize: 16,
+    color: DEEP_BREW,
+    flex: 1,
+    marginRight: 12,
+  },
+  modalEmptyText: {
+    textAlign: 'center',
+    color: '#666',
+    paddingVertical: 24,
+    fontSize: 14,
+  },
+  modalCustomButton: {
+    marginTop: 16,
+    backgroundColor: HOP_GREEN,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  modalCustomButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  modalOtherButton: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+  },
+  modalOtherIcon: {
+    marginRight: 8,
+  },
+  modalOtherText: {
+    color: HOP_GREEN,
+    fontWeight: '600',
+    fontSize: 15,
   },
 });

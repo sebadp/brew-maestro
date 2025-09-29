@@ -2,6 +2,13 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Recipe } from './recipeStore';
 import { formatDateTime } from '../utils/date';
+import { scheduleStepNotification, cancelStepNotification, cancelAllStepNotifications } from '../utils/notifications';
+
+export interface BrewStepTask {
+  id: string;
+  text: string;
+  completed: boolean;
+}
 
 export interface BrewStep {
   id: string;
@@ -11,6 +18,7 @@ export interface BrewStep {
   description?: string;
   completed: boolean;
   completedAt?: string;
+  tasks?: BrewStepTask[];
 }
 
 export interface Measurement {
@@ -30,6 +38,8 @@ export interface BrewSession {
   startedAt: string;
   completedAt?: string;
   currentStepIndex: number;
+  currentStepTargetTs?: number | null;
+  currentStepNotificationId?: string | null;
   steps: BrewStep[];
   measurements: Measurement[];
   notes: string[];
@@ -44,6 +54,8 @@ interface BrewSessionStore {
   activeSession: BrewSession | null;
   isLoading: boolean;
   error: string | null;
+  stepTaskTemplates: Record<string, string[]>;
+  templatesLoaded: boolean;
 
   // Actions
   loadSessions: () => Promise<void>;
@@ -52,12 +64,26 @@ interface BrewSessionStore {
   completeStep: (sessionId: string, stepId: string) => Promise<void>;
   addMeasurement: (sessionId: string, measurement: Omit<Measurement, 'id' | 'timestamp'>) => Promise<void>;
   addNote: (sessionId: string, note: string) => Promise<void>;
+  addStepTask: (sessionId: string, stepId: string, task: string) => Promise<void>;
+  toggleStepTask: (sessionId: string, stepId: string, taskId: string) => Promise<void>;
+  removeStepTask: (sessionId: string, stepId: string, taskId: string) => Promise<void>;
+  loadStepTaskTemplates: () => Promise<void>;
+  addTemplateTask: (stepId: string, task: string) => Promise<void>;
+  removeTemplateTask: (stepId: string, task: string) => Promise<void>;
+  deleteSession: (sessionId: string) => Promise<void>;
   setActiveSession: (sessionId: string | null) => void;
   getSession: (id: string) => BrewSession | undefined;
   clearError: () => void;
+  // Timer actions
+  startStepTimer: (sessionId: string, remainingSeconds: number) => Promise<void>;
+  pauseStepTimer: (sessionId: string) => Promise<void>;
+  resumeStepTimer: (sessionId: string, remainingSeconds: number) => Promise<void>;
+  clearStepTimer: (sessionId: string) => Promise<void>;
+  getRemainingTime: (sessionId: string) => number;
 }
 
 const STORAGE_KEY = '@brewmaestro:brewSessions';
+const STEP_TASK_TEMPLATES_KEY = '@brewmaestro:stepTaskTemplates';
 
 // Default brew steps template
 const createDefaultSteps = (recipe: Recipe): BrewStep[] => [
@@ -67,6 +93,7 @@ const createDefaultSteps = (recipe: Recipe): BrewStep[] => [
     duration: 15,
     description: 'Sanitize all equipment and gather ingredients',
     completed: false,
+    tasks: [],
   },
   {
     id: '2',
@@ -75,6 +102,7 @@ const createDefaultSteps = (recipe: Recipe): BrewStep[] => [
     temperature: 72,
     description: 'Heat strike water to mash temperature',
     completed: false,
+    tasks: [],
   },
   {
     id: '3',
@@ -83,6 +111,7 @@ const createDefaultSteps = (recipe: Recipe): BrewStep[] => [
     temperature: 66,
     description: 'Add grains and maintain mash temperature',
     completed: false,
+    tasks: [],
   },
   {
     id: '4',
@@ -91,6 +120,7 @@ const createDefaultSteps = (recipe: Recipe): BrewStep[] => [
     temperature: 75,
     description: 'Raise temperature to mash out',
     completed: false,
+    tasks: [],
   },
   {
     id: '5',
@@ -99,6 +129,7 @@ const createDefaultSteps = (recipe: Recipe): BrewStep[] => [
     temperature: 75,
     description: 'Rinse grains to extract remaining sugars',
     completed: false,
+    tasks: [],
   },
   {
     id: '6',
@@ -106,6 +137,7 @@ const createDefaultSteps = (recipe: Recipe): BrewStep[] => [
     duration: recipe.boilTime - 15,
     description: 'Add bittering hops and start boil timer',
     completed: false,
+    tasks: [],
   },
   {
     id: '7',
@@ -113,6 +145,7 @@ const createDefaultSteps = (recipe: Recipe): BrewStep[] => [
     duration: 10,
     description: 'Add flavor hops',
     completed: false,
+    tasks: [],
   },
   {
     id: '8',
@@ -120,6 +153,7 @@ const createDefaultSteps = (recipe: Recipe): BrewStep[] => [
     duration: 5,
     description: 'Add aroma hops and finish boil',
     completed: false,
+    tasks: [],
   },
   {
     id: '9',
@@ -128,6 +162,7 @@ const createDefaultSteps = (recipe: Recipe): BrewStep[] => [
     temperature: 20,
     description: 'Cool wort to pitching temperature',
     completed: false,
+    tasks: [],
   },
   {
     id: '10',
@@ -135,6 +170,7 @@ const createDefaultSteps = (recipe: Recipe): BrewStep[] => [
     duration: 15,
     description: 'Transfer to fermenter and pitch yeast',
     completed: false,
+    tasks: [],
   },
 ];
 
@@ -143,6 +179,53 @@ const useBrewSessionStore = create<BrewSessionStore>((set, get) => ({
   activeSession: null,
   isLoading: false,
   error: null,
+  stepTaskTemplates: {},
+  templatesLoaded: false,
+
+  loadStepTaskTemplates: async () => {
+    try {
+      const stored = await AsyncStorage.getItem(STEP_TASK_TEMPLATES_KEY);
+      const templates = stored ? JSON.parse(stored) : {};
+      set({ stepTaskTemplates: templates, templatesLoaded: true });
+    } catch (error) {
+      set({ stepTaskTemplates: {}, templatesLoaded: true });
+    }
+  },
+
+  addTemplateTask: async (stepId, taskText) => {
+    const trimmed = taskText.trim();
+    if (!trimmed) return;
+
+    if (!get().templatesLoaded) {
+      await get().loadStepTaskTemplates();
+    }
+
+    const currentTemplates = get().stepTaskTemplates;
+    const existing = currentTemplates[stepId] ?? [];
+    if (existing.includes(trimmed)) return;
+
+    const updatedTemplates = {
+      ...currentTemplates,
+      [stepId]: [...existing, trimmed],
+    };
+
+    await AsyncStorage.setItem(STEP_TASK_TEMPLATES_KEY, JSON.stringify(updatedTemplates));
+    set({ stepTaskTemplates: updatedTemplates });
+  },
+
+  removeTemplateTask: async (stepId, taskText) => {
+    if (!get().templatesLoaded) {
+      await get().loadStepTaskTemplates();
+    }
+
+    const currentTemplates = get().stepTaskTemplates;
+    const existing = currentTemplates[stepId] ?? [];
+    const updatedStepTasks = existing.filter(text => text !== taskText);
+    const updatedTemplates = { ...currentTemplates, [stepId]: updatedStepTasks };
+
+    await AsyncStorage.setItem(STEP_TASK_TEMPLATES_KEY, JSON.stringify(updatedTemplates));
+    set({ stepTaskTemplates: updatedTemplates });
+  },
 
   loadSessions: async () => {
     set({ isLoading: true, error: null });
@@ -164,6 +247,23 @@ const useBrewSessionStore = create<BrewSessionStore>((set, get) => ({
   startSession: async (recipe) => {
     set({ isLoading: true, error: null });
     try {
+      if (!get().templatesLoaded) {
+        await get().loadStepTaskTemplates();
+      }
+
+      const templates = get().stepTaskTemplates;
+      const defaultSteps = createDefaultSteps(recipe).map(step => {
+        const templateTasks = templates[step.id] ?? [];
+        return {
+          ...step,
+          tasks: templateTasks.map((text, index) => ({
+            id: `template_${step.id}_${Date.now()}_${index}`,
+            text,
+            completed: false,
+          })),
+        };
+      });
+
       const session: BrewSession = {
         id: Date.now().toString(),
         recipeId: recipe.id,
@@ -171,7 +271,9 @@ const useBrewSessionStore = create<BrewSessionStore>((set, get) => ({
         status: 'brewing',
         startedAt: new Date().toISOString(),
         currentStepIndex: 0,
-        steps: createDefaultSteps(recipe),
+        currentStepTargetTs: null,
+        currentStepNotificationId: null,
+        steps: defaultSteps,
         measurements: [],
         notes: [],
       };
@@ -268,6 +370,86 @@ const useBrewSessionStore = create<BrewSessionStore>((set, get) => ({
     await get().updateSession(sessionId, { notes: updatedNotes });
   },
 
+  addStepTask: async (sessionId, stepId, taskText) => {
+    const session = get().sessions.find(s => s.id === sessionId);
+    if (!session) return;
+
+    const newTask: BrewStepTask = {
+      id: `task_${Date.now()}`,
+      text: taskText,
+      completed: false,
+    };
+
+    const updatedSteps = session.steps.map(step =>
+      step.id === stepId
+        ? { ...step, tasks: [...(step.tasks ?? []), newTask] }
+        : step
+    );
+
+    await get().updateSession(sessionId, { steps: updatedSteps });
+    await get().addTemplateTask(stepId, taskText);
+  },
+
+  toggleStepTask: async (sessionId, stepId, taskId) => {
+    const session = get().sessions.find(s => s.id === sessionId);
+    if (!session) return;
+
+    const updatedSteps = session.steps.map(step => {
+      if (step.id !== stepId) return step;
+      const tasks = (step.tasks ?? []).map(task =>
+        task.id === taskId ? { ...task, completed: !task.completed } : task
+      );
+      return { ...step, tasks };
+    });
+
+    await get().updateSession(sessionId, { steps: updatedSteps });
+  },
+
+  removeStepTask: async (sessionId, stepId, taskId) => {
+    const session = get().sessions.find(s => s.id === sessionId);
+    if (!session) return;
+
+    let removedTask: BrewStepTask | undefined;
+    const updatedSteps = session.steps.map(step => {
+      if (step.id !== stepId) return step;
+      const tasks = (step.tasks ?? []).filter(task => {
+        if (task.id === taskId) {
+          removedTask = task;
+          return false;
+        }
+        return true;
+      });
+      return { ...step, tasks };
+    });
+
+    await get().updateSession(sessionId, { steps: updatedSteps });
+    if (removedTask) {
+      await get().removeTemplateTask(stepId, removedTask.text);
+    }
+  },
+
+  deleteSession: async (sessionId) => {
+    set({ isLoading: true, error: null });
+    try {
+      // Cancel all notifications for this session
+      await cancelAllStepNotifications(sessionId);
+
+      const currentSessions = get().sessions;
+      const updatedSessions = currentSessions.filter(session => session.id !== sessionId);
+
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updatedSessions));
+
+      const activeSession = get().activeSession;
+      set({
+        sessions: updatedSessions,
+        activeSession: activeSession?.id === sessionId ? null : activeSession,
+        isLoading: false,
+      });
+    } catch (error) {
+      set({ error: 'Failed to delete session', isLoading: false });
+    }
+  },
+
   setActiveSession: (sessionId) => {
     const session = sessionId ? get().sessions.find(s => s.id === sessionId) : null;
     set({ activeSession: session || null });
@@ -279,6 +461,99 @@ const useBrewSessionStore = create<BrewSessionStore>((set, get) => ({
 
   clearError: () => {
     set({ error: null });
+  },
+
+  // Timer actions
+  startStepTimer: async (sessionId, remainingSeconds) => {
+    const session = get().sessions.find(s => s.id === sessionId);
+    if (!session) return;
+
+    const targetTimestamp = Date.now() + (remainingSeconds * 1000);
+
+    // Cancel any existing notification
+    if (session.currentStepNotificationId) {
+      await cancelStepNotification(session.currentStepNotificationId);
+    }
+
+    // Schedule new notification
+    const currentStep = session.steps[session.currentStepIndex];
+    const stepName = currentStep?.name || `Step ${session.currentStepIndex + 1}`;
+    const notificationId = await scheduleStepNotification(
+      sessionId,
+      stepName,
+      targetTimestamp
+    );
+
+    await get().updateSession(sessionId, {
+      currentStepTargetTs: targetTimestamp,
+      currentStepNotificationId: notificationId
+    });
+  },
+
+  pauseStepTimer: async (sessionId) => {
+    const session = get().sessions.find(s => s.id === sessionId);
+    if (session?.currentStepNotificationId) {
+      await cancelStepNotification(session.currentStepNotificationId);
+    }
+
+    await get().updateSession(sessionId, {
+      currentStepTargetTs: null,
+      currentStepNotificationId: null
+    });
+  },
+
+  resumeStepTimer: async (sessionId, remainingSeconds) => {
+    const session = get().sessions.find(s => s.id === sessionId);
+    if (!session) return;
+
+    const targetTimestamp = Date.now() + (remainingSeconds * 1000);
+
+    // Cancel any existing notification
+    if (session.currentStepNotificationId) {
+      await cancelStepNotification(session.currentStepNotificationId);
+    }
+
+    // Schedule new notification
+    const currentStep = session.steps[session.currentStepIndex];
+    const stepName = currentStep?.name || `Step ${session.currentStepIndex + 1}`;
+    const notificationId = await scheduleStepNotification(
+      sessionId,
+      stepName,
+      targetTimestamp
+    );
+
+    await get().updateSession(sessionId, {
+      currentStepTargetTs: targetTimestamp,
+      currentStepNotificationId: notificationId
+    });
+  },
+
+  clearStepTimer: async (sessionId) => {
+    const session = get().sessions.find(s => s.id === sessionId);
+    if (session?.currentStepNotificationId) {
+      await cancelStepNotification(session.currentStepNotificationId);
+    }
+
+    await get().updateSession(sessionId, {
+      currentStepTargetTs: null,
+      currentStepNotificationId: null
+    });
+  },
+
+  getRemainingTime: (sessionId) => {
+    const session = get().sessions.find(s => s.id === sessionId);
+    if (!session || !session.currentStepTargetTs) {
+      return 0;
+    }
+
+    const remaining = Math.max(0, Math.round((session.currentStepTargetTs - Date.now()) / 1000));
+
+    // If the timer expired more than 1 hour ago, clear it (safety check)
+    if (remaining === 0 && (Date.now() - session.currentStepTargetTs) > 3600000) {
+      get().clearStepTimer(sessionId);
+    }
+
+    return remaining;
   },
 }));
 

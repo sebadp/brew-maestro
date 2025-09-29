@@ -23,7 +23,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#F6C101"
+        "backgroundColor": "#00000000"
       },
       "package": "com.brewmaestro.app",
       "versionCode": 1

@@ -26,9 +26,18 @@ export default function TabLayout() {
       }}
     >
       <Tabs.Screen
+        name="home"
+        options={{
+          title: 'Inicio',
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="home-variant" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="index"
         options={{
-          title: 'Recipes',
+          title: 'Recetas',
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="flask" size={size} color={color} />
           ),
@@ -37,27 +46,27 @@ export default function TabLayout() {
       <Tabs.Screen
         name="brew"
         options={{
-          title: 'Brew',
+          title: 'Brew Day',
           tabBarIcon: ({ color, size }) => (
             <MaterialCommunityIcons name="fire" size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
-        name="calculator"
+        name="brews"
         options={{
-          title: 'Calculator',
+          title: 'Brews',
           tabBarIcon: ({ color, size }) => (
-            <MaterialIcons name="calculate" size={size} color={color} />
+            <MaterialCommunityIcons name="beer" size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
-        name="history"
+        name="calculator"
         options={{
-          title: 'History',
+          title: 'Calculadora',
           tabBarIcon: ({ color, size }) => (
-            <MaterialIcons name="history" size={size} color={color} />
+            <MaterialIcons name="calculate" size={size} color={color} />
           ),
         }}
       />

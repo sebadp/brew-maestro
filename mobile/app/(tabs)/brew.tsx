@@ -8,6 +8,7 @@ import { isSQLiteAvailable } from '../../database/brewDb';
 import { useBrewTrackerStore } from '../../store/brewTrackerStore';
 import useBrewSessionStore, { BrewStepTask } from '../../store/brewSessionStore';
 import useRecipeStore, { Recipe } from '../../store/recipeStore';
+import { startAlarm, stopAlarm } from '../../utils/alarmSound';
 
 const MAESTRO_GOLD = '#F6C101';
 const HOP_GREEN = '#81A742';
@@ -40,6 +41,8 @@ export default function BrewScreen() {
   const [chooseRecipeVisible, setChooseRecipeVisible] = useState(false);
   const [isStartingSession, setIsStartingSession] = useState(false);
   const [stepTargetTs, setStepTargetTs] = useState<number | null>(null);
+  const [alarmModalVisible, setAlarmModalVisible] = useState(false);
+  const [completedStepName, setCompletedStepName] = useState('');
 
   const {
     activeSession,
@@ -103,7 +106,7 @@ export default function BrewScreen() {
           setIsTimerRunning(false);
           clearStepTimer(activeSession.id);
           const stepName = steps[currentStep]?.name ?? BREW_STEPS[currentStep]?.name ?? 'Step';
-          Alert.alert('Step Complete!', `${stepName} is done!`);
+          showStepCompletedAlarm(stepName);
         }
       }, 1000);
     }
@@ -127,7 +130,7 @@ export default function BrewScreen() {
           setIsTimerRunning(false);
           clearStepTimer(activeSession.id);
           const stepName = steps[currentStep]?.name ?? BREW_STEPS[currentStep]?.name ?? 'Step';
-          Alert.alert('Step Complete!', `${stepName} is done!`);
+          showStepCompletedAlarm(stepName);
         }
       }
     };
@@ -135,6 +138,13 @@ export default function BrewScreen() {
     const subscription = AppState.addEventListener('change', handleAppStateChange);
     return () => subscription?.remove();
   }, [activeSession, isTimerRunning, getRemainingTime, clearStepTimer, steps, currentStep]);
+
+  // Cleanup alarm on unmount
+  useEffect(() => {
+    return () => {
+      stopAlarm();
+    };
+  }, []);
 
   useEffect(() => {
     loadSessions();
@@ -184,7 +194,14 @@ export default function BrewScreen() {
     setIsTimerRunning(false);
     setCurrentStep(0);
     setTimer(0);
-  }, [activeSession, steps]);
+
+    // Stop alarm if no active session
+    if (alarmModalVisible) {
+      setAlarmModalVisible(false);
+      setCompletedStepName('');
+      stopAlarm();
+    }
+  }, [activeSession, steps, alarmModalVisible]);
 
   const handleStartPress = () => {
     if (activeSession) {
@@ -357,6 +374,18 @@ export default function BrewScreen() {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const showStepCompletedAlarm = (stepName: string) => {
+    setCompletedStepName(stepName);
+    setAlarmModalVisible(true);
+    startAlarm();
+  };
+
+  const dismissAlarm = () => {
+    setAlarmModalVisible(false);
+    setCompletedStepName('');
+    stopAlarm();
   };
 
   const sessionTitle = useMemo(() => activeSession?.recipeName ?? 'Brew Session', [activeSession]);
@@ -749,6 +778,28 @@ export default function BrewScreen() {
                 <Text style={styles.modalPrimaryText}>Guardar</Text>
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={alarmModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {}} // Prevent dismissal with back button
+      >
+        <View style={styles.alarmContainer}>
+          <View style={styles.alarmContent}>
+            <View style={styles.alarmIcon}>
+              <MaterialCommunityIcons name="alarm" size={80} color={MAESTRO_GOLD} />
+            </View>
+            <Text style={styles.alarmTitle}>¡Tiempo completo!</Text>
+            <Text style={styles.alarmMessage}>{completedStepName} terminado</Text>
+            <Text style={styles.alarmSubtitle}>Es hora del siguiente paso</Text>
+
+            <TouchableOpacity style={styles.alarmButton} onPress={dismissAlarm}>
+              <Text style={styles.alarmButtonText}>Continuar</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -1147,5 +1198,64 @@ const styles = StyleSheet.create({
   },
   modalDisabledText: {
     color: '#A0A0A0',
+  },
+  // Alarm modal styles
+  alarmContainer: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  alarmContent: {
+    backgroundColor: 'white',
+    borderRadius: 20,
+    padding: 32,
+    alignItems: 'center',
+    minWidth: 280,
+    maxWidth: '90%',
+    ...createShadow('#000', { width: 0, height: 8 }, 0.3, 20, 10),
+  },
+  alarmIcon: {
+    marginBottom: 20,
+    backgroundColor: '#FFF8E7',
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  alarmTitle: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: DEEP_BREW,
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  alarmMessage: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: MAESTRO_GOLD,
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  alarmSubtitle: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 32,
+  },
+  alarmButton: {
+    backgroundColor: MAESTRO_GOLD,
+    paddingHorizontal: 40,
+    paddingVertical: 16,
+    borderRadius: 12,
+    minWidth: 150,
+  },
+  alarmButtonText: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: '700',
+    textAlign: 'center',
   },
 });
